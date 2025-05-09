@@ -1,0 +1,93 @@
+name: CI Pipeline
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+    branches:
+      - main
+
+jobs:
+  # Job pour construire l'application
+  build:
+    runs-on: ubuntu-latest
+    services:
+      mysql:
+        image: mysql:8
+        ports:
+          - 3306:3306
+        env:
+          MYSQL_ROOT_PASSWORD: mypass
+          MYSQL_DATABASE: ecommerce_app_database
+          MYSQL_USER: mysqluser
+          MYSQL_PASSWORD: mypass
+        options: >-
+          --health-cmd="mysqladmin ping --silent"
+          --health-interval=10s
+          --health-timeout=5s
+          --health-retries=3
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v2
+
+    - name: Set up Docker
+      uses: docker/setup-buildx-action@v1
+
+    - name: Cache Docker layers
+      uses: actions/cache@v2
+      with:
+        path: /tmp/.buildx-cache
+        key: ${{ runner.os }}-buildx-${{ github.sha }}
+        restore-keys: |
+          ${{ runner.os }}-buildx-
+
+    - name: Build and push Docker images
+      run: |
+        docker-compose -f docker-compose.yml build
+
+    - name: Run tests
+      run: |
+        docker-compose -f docker-compose.yml run --rm authentication-service mvn test
+        docker-compose -f docker-compose.yml run --rm payment-service mvn test
+        docker-compose -f docker-compose.yml run --rm common-data-service mvn test
+        docker-compose -f docker-compose.yml run --rm search-suggestion-service mvn test
+
+  # Job pour SonarQube
+  sonarQube:
+    runs-on: ubuntu-latest
+    needs: build
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v2
+
+    - name: Set up SonarQube
+      uses: sonarsource/sonarcloud-github-action@master
+      with:
+        organization: 'your-sonarcloud-organization'
+        projectKey: 'your-project-key'
+        token: ${{ secrets.SONAR_TOKEN }}
+
+    - name: Run SonarQube analysis
+      run: |
+        mvn clean verify sonar:sonar -Dsonar.projectKey=your-project-key -Dsonar.host.url=https://sonarcloud.io -Dsonar.login=${{ secrets.SONAR_TOKEN }}
+
+  # Job pour Trivy (scanner de vulnérabilité)
+  trivy:
+    runs-on: ubuntu-latest
+    needs: build
+    steps:
+    - name: Install Trivy
+      run: |
+        sudo apt-get install -y wget
+        wget https://github.com/aquasecurity/trivy/releases/download/v0.23.2/trivy_0.23.2_Linux-64bit.deb
+        sudo dpkg -i trivy_0.23.2_Linux-64bit.deb
+
+    - name: Run Trivy to scan Docker images
+      run: |
+        trivy image --no-progress --exit-code 1 --severity HIGH,CRITICAL ecf3-react-ui
+        trivy image --no-progress --exit-code 1 --severity HIGH,CRITICAL ecf3-authentication-service
+        trivy image --no-progress --exit-code 1 --severity HIGH,CRITICAL ecf3-payment-service
+        trivy image --no-progress --exit-code 1 --severity HIGH,CRITICAL ecf3-common-data-service
+        trivy image --no-progress --exit-code 1 --severity HIGH,CRITICAL ecf3-search-suggestion-service
